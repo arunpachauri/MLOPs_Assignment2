@@ -1,0 +1,93 @@
+import joblib
+import shap
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import GradientBoostingClassifier
+from xgboost import XGBClassifier
+from sklearn.pipeline import make_pipeline
+from tpot.export_utils import set_param_recursive
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+
+# Load the dataset (UCI Adult Income dataset)
+url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data'
+columns = ['age', 'workclass', 'fnlwgt', 'education', 'education_num', 'marital_status', 
+           'occupation', 'relationship', 'race', 'sex', 'capital_gain', 'capital_loss', 
+           'hours_per_week', 'native_country', 'income']
+
+data = pd.read_csv(url, names=columns, na_values=' ?', sep=',\s', engine='python')
+
+# Data cleaning
+data_clean = data.dropna()
+data_clean = data_clean.drop(['capital_gain', 'capital_loss', 'relationship', 'marital_status'], axis=1)
+
+# Features and target variable
+X = data_clean.drop('income', axis=1)
+y = data_clean['income'].apply(lambda x: 1 if x == '>50K' else 0)
+
+# Split the data into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+# Define numeric and categorical columns
+numeric_features = ['age', 'fnlwgt', 'education_num', 'hours_per_week']
+categorical_features = ['workclass', 'education', 'occupation', 'race', 'sex', 'native_country']
+
+# Preprocessing pipelines for numeric and categorical features
+numeric_transformer = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler', StandardScaler())])
+
+categorical_transformer = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='most_frequent')),
+    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))])
+
+# ColumnTransformer to apply transformers to the corresponding feature types
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', numeric_transformer, numeric_features),
+        ('cat', categorical_transformer, categorical_features)])
+
+# Fit the preprocessor on the training data
+X_train_preprocessed = preprocessor.fit_transform(X_train)
+X_test_preprocessed = preprocessor.transform(X_test)
+
+# Create the model pipeline
+exported_pipeline = make_pipeline(
+    XGBClassifier(learning_rate=0.1, max_depth=6, min_child_weight=4, n_estimators=100, n_jobs=1, subsample=0.7500000000000001, verbosity=0)
+)
+set_param_recursive(exported_pipeline.steps, 'random_state', 42)
+
+# Train the model
+exported_pipeline.fit(X_train_preprocessed, y_train)
+results = exported_pipeline.predict(X_test_preprocessed)
+
+# Evaluate the model
+accuracy = accuracy_score(y_test, results)
+print(f"Accuracy: {accuracy}")
+print("Classification Report:")
+print(classification_report(y_test, results))
+
+# Save the preprocessor and the trained model
+joblib.dump(preprocessor, 'preprocessor.pkl')  # Save the preprocessor
+joblib.dump(exported_pipeline, 'trained_model.pkl')  # Save the trained model
+
+
+#############################################
+# Implementing SHAP
+
+# Use TreeExplainer for XgbClassifier
+explainer = shap.TreeExplainer(exported_pipeline.named_steps['xgbclassifier'])
+
+# Compute SHAP values for the test data
+shap_values = explainer.shap_values(X_test_preprocessed)
+
+# Get feature names: Combine numeric and one-hot encoded categorical feature names
+categorical_feature_names = preprocessor.transformers_[1][1]['onehot'].get_feature_names_out(categorical_features).tolist()
+all_feature_names = numeric_features + categorical_feature_names
+
+# Plot SHAP summary
+shap.summary_plot(shap_values, X_test_preprocessed, feature_names=all_feature_names)
